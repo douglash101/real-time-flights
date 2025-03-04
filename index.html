@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voos em Tempo Real</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Nunito:ital,wght@0,200..1000;1,200..1000&family=Ysabeau+SC:wght@1..1000&display=swap"
+        rel="stylesheet">
+    <style>
+        * {
+            color: #757575;
+            list-style: none;
+            font-size: 17px;
+            font-family: "Nunito", serif;
+            font-optical-sizing: auto;
+            font-weight: 700;
+            font-style: normal;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+
+        #info {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            margin: 10px;
+            top: 0px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+
+        .menu {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 16px;
+            width: 500px;
+            box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        #searchButton {
+            padding: 10px 6px 10px 6px !important;
+            display: block;
+            color: #fff;
+            transition: top 0.2s;
+            text-align: center;
+            width: 200px;
+            background: #fff;
+            border: 2px solid rgb(229 229 229);
+            border-radius: 16px;
+            box-shadow: 0 2px 0 rgb(229 229 229);
+            margin-bottom: 16px;
+            position: relative;
+            margin: 0 auto !important;
+            background-color: #1CB0F6;
+            border-color: #1898d3;
+            box-shadow: 0 2px 0 #1898d3;
+            cursor: pointer;
+        }
+
+        #searchButton:active {
+            top: 2px;
+            box-shadow: 0 0px 0 rgb(229 229 229);
+        }
+
+        #searchButton:disabled {
+            background-color: #a0a0a0;
+            border-color: #888;
+            box-shadow: 0 2px 0 #888;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        @media (max-width: 768px) {
+            .menu {
+                width: 92%;
+                bottom: 5px;
+            }
+        }
+
+        #alertBox {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            z-index: 2000;
+            display: none;
+            text-align: center;
+            font-size: 16px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+    <div id="info">Arraste o mapa e clique em "Pesquisar nessa área"</div>
+    <div class="menu">
+        <button id="searchButton" onclick="searchInArea()">Pesquisar nessa área <span id="countdown"></span></button>
+    </div>
+    <div id="alertBox">Limite de requisições excedido (429). Tente novamente mais tarde.</div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([-25.4284, -49.2733], 7);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        let countdownInterval = null;
+        const updateInterval = 15; // Atualiza a cada 15 segundos após a primeira busca
+        const blockDuration = 120; // 2 minutos em segundos
+
+        function handleTooManyRequests() {
+            const alertBox = document.getElementById('alertBox');
+            const searchButton = document.getElementById('searchButton');
+            const countdownDiv = document.getElementById('countdown');
+
+            alertBox.style.display = 'block';
+            setTimeout(() => {
+                alertBox.style.display = 'none';
+            }, 5000);
+
+            searchButton.disabled = true;
+
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownDiv.innerHTML = '';
+            }
+
+            setTimeout(() => {
+                searchButton.disabled = false;
+            }, blockDuration * 1000);
+        }
+
+        async function fetchPlaneData(bounds) {
+            const url = bounds
+                ? `https://opensky-network.org/api/states/all?lamin=${bounds.getSouth()}&lomin=${bounds.getWest()}&lamax=${bounds.getNorth()}&lomax=${bounds.getEast()}`
+                : 'https://opensky-network.org/api/states/all';
+
+            try {
+                const response = await fetch(url);
+                if (response.status === 429) {
+                    throw new Error('Too Many Requests');
+                }
+                const data = await response.json();
+                return data.states || [];
+            } catch (error) {
+                console.error('Erro ao buscar dados da API:', error);
+                if (error.message === 'Too Many Requests') {
+                    handleTooManyRequests();
+                }
+                return [];
+            }
+        }
+
+        function updateMap(states) {
+            const infoDiv = document.getElementById('info');
+            infoDiv.innerHTML = `Aviões detectados: ${states.length}`;
+
+            map.eachLayer(layer => {
+                if (layer instanceof L.CircleMarker) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            states.forEach(state => {
+                const [icao24, callsign, originCountry, timePosition, lastContact, longitude, latitude,
+                    baroAltitude, onGround, velocity, , , , , , trueTrack] = state;
+
+                if (latitude && longitude && !onGround) { // Só aviões no ar
+                    const marker = L.circleMarker([latitude, longitude], {
+                        radius: 6,
+                        fillColor: '#1CB0F6',
+                        color: '#1898d3',
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.8
+                    }).addTo(map);
+                    marker.bindPopup(`
+                        <b>Voo:</b> ${callsign || 'Desconhecido'}<br>
+                        <b>País de Origem:</b> ${originCountry}<br>
+                        <b>Altitude:</b> ${baroAltitude ? (baroAltitude + ' m') : 'N/A'}<br>
+                        <b>Velocidade:</b> ${velocity ? (velocity * 3.6).toFixed(2) + ' km/h' : 'N/A'}<br>
+                        <b>ICAO24:</b> ${icao24}
+                    `);
+                }
+            });
+        }
+
+        function startCountdown() {
+            let timeLeft = updateInterval;
+            const countdownDiv = document.getElementById('countdown');
+
+            if (countdownInterval) clearInterval(countdownInterval);
+
+            countdownInterval = setInterval(() => {
+                countdownDiv.innerHTML = `(${timeLeft})`;
+                timeLeft--;
+
+                if (timeLeft < 0) {
+                    clearInterval(countdownInterval);
+                    searchInArea();
+                    startCountdown();
+                }
+            }, 1000);
+        }
+
+        async function searchInArea() {
+            const bounds = map.getBounds();
+            const states = await fetchPlaneData(bounds);
+            updateMap(states);
+            if (!document.getElementById('searchButton').disabled) {
+                startCountdown();
+            }
+        }
+    </script>
+</body>
+
+</html>
